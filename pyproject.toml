@@ -5,8 +5,8 @@ description = "Radial Image Analysis Toolkit"
 authors = ["Gabriele Girelli <gigi.ga90@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/ggirelli/radiantkit"
-repository = "https://github.com/ggirelli/radiantkit"
+homepage = "https://github.com/digin1/radiantkit"
+repository = "https://github.com/digin1/radiantkit"
 keywords = ["microscopy", "image", "analysis", "bioimaging", "nucleus", "segmentation", "conversion"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,7 +23,7 @@ python = "^3.8"
 czifile = "^2019.7.2"
 joblib = ">=0.16,<1.1"
 memory-profiler = "^0.58.0 "
-nd2reader = {git = "https://github.com/ggirelli/nd2reader"}
+nd2reader = {git = "https://github.com/digin1/nd2reader"}
 numpy = "^1.19.2"
 pandas = "^1.1.2"
 pims = "^0.5"
