@@ -18,7 +18,18 @@ import six  # type: ignore
 from typing import DefaultDict, Iterable, List, Optional, Tuple
 import warnings
 import xml.etree.ElementTree as ET
+from collections import Counter
+import re
+import mmap
+from typing import List, Tuple
+from functools import lru_cache
+import os
+import nd2
 
+
+_RE_Z_LOOP_STEP = re.compile(
+    "Z Stack Loop: ([0-9]+)\r\n- Step: ([0-9,\\.]+) ([^\r\n]*)"
+)
 
 class ND2Reader2(ND2Reader):
     _xy_resolution: float
@@ -26,10 +37,16 @@ class ND2Reader2(ND2Reader):
     _dtype: str
 
     def __init__(self, filename):
-        super(ND2Reader2, self).__init__(filename)
+        super(ND2Reader2, self).__init__(filename)  
         self._set_xy_resolution()
-        self._set_z_resolution()
+        with nd2.ND2File(self.filename) as f:
+            check3d = f.sizes
+        if 'Z' in check3d:
+            self._set_z_resolution()
+        else:
+            self._z_resolution = {}
         self._set_proposed_dtype()
+        self._z_loop_step_cache = {}
 
     def log_details(self, logger: Logger = getLogger()) -> None:
         logger.info(f"Input: '{self.filename}'")
@@ -97,11 +114,18 @@ class ND2Reader2(ND2Reader):
         if 0 == self._xy_resolution:
             logging.warning("XY resolution set to 0! (possibly incorrect obj. setup)")
 
+    #original
+    # def _set_z_resolution(self):
+    #    self._z_resolution: DefaultDict[float, int] = defaultdict(lambda: 0)
+    #    for field_id in range(self.field_count()):
+    #        for delta_z in self.get_field_resolutionZ(field_id):
+    #            self._z_resolution[delta_z] += 1
+
+    #improvement
     def _set_z_resolution(self):
-        self._z_resolution: DefaultDict[float, int] = defaultdict(lambda: 0)
-        for field_id in range(self.field_count()):
-            for delta_z in self.get_field_resolutionZ(field_id):
-                self._z_resolution[delta_z] += 1
+        delta_z_list = [delta_z for field_id in range(self.field_count())
+            for delta_z in self.get_field_resolutionZ(field_id)]
+        self._z_resolution = Counter(delta_z_list)
 
     def _set_proposed_dtype(self) -> None:
         dtype_tag: DefaultDict = defaultdict(lambda: "float")
@@ -157,6 +181,9 @@ class ND2Reader2(ND2Reader):
         else:
             self.bundle_axes = "yxc" if "c" in self.axes else "yx"
 
+
+    #improvement        
+    @lru_cache(maxsize=128)
     def get_Z_loop_step(self, parser) -> Tuple[int, float, str]:
         image_text_info = parser._raw_metadata.image_text_info[
             six.b("SLxImageTextInfo")
@@ -165,10 +192,7 @@ class ND2Reader2(ND2Reader):
         if 0 == len(metadata_fields):
             return (0, np.nan, "")
         metadata = metadata_fields[0]
-        parsed = re.search(
-            "Z Stack Loop: ([0-9]+)\r\n- Step: ([0-9,\\.]+) ([^\r\n]*)",
-            metadata.decode(),
-        )
+        parsed = _RE_Z_LOOP_STEP.search(metadata.decode())
         if parsed is None:
             return (0, np.nan, "")
         parsed_fields = parsed.groups()
@@ -180,15 +204,55 @@ class ND2Reader2(ND2Reader):
 
     def get_field_resolutionZ(self, field_id: int) -> List[float]:
         with open(self.filename, "rb") as ND2H:
-            parser = ND2Parser(ND2H)
-            z_fields, z_step, z_unit = self.get_Z_loop_step(parser)
-            if 0 != z_fields:
-                return [z_step]
-            Zdata = np.array(parser._raw_metadata.z_data)
-            Zlevels = np.array(parser.metadata["z_levels"]).astype("int")
-            Zlevels = Zlevels + len(Zlevels) * field_id
-            Zdata = Zdata[Zlevels]
-            return np.round(np.diff(Zdata), 3).tolist()
+            size = os.path.getsize(self.filename)
+            with mmap.mmap(ND2H.fileno(), size, access=mmap.ACCESS_READ) as mem:
+                parser = ND2Parser(mem)
+                z_fields, z_step, z_unit = self.get_Z_loop_step(parser)
+                if 0 != z_fields:
+                    return [z_step] 
+                Zdata = np.array(parser._raw_metadata.z_data)
+                Zlevels = np.array(parser.metadata["z_levels"]).astype("int")
+                Zlevels = Zlevels + len(Zlevels) * field_id
+                Zdata = Zdata[Zlevels]
+                return np.round(np.diff(Zdata), 3).tolist()
+            
+    #original
+    # def get_Z_loop_step(self, parser) -> Tuple[int, float, str]:
+    #     image_text_info = parser._raw_metadata.image_text_info[
+    #         six.b("SLxImageTextInfo")
+    #     ]
+    #     metadata_fields = [x for x in image_text_info.values() if b"Z Stack Loop" in x]
+    #     if 0 == len(metadata_fields):
+    #         return (0, np.nan, "")
+    #     metadata = metadata_fields[0]
+    #     parsed = re.search(
+    #         "Z Stack Loop: ([0-9]+)\r\n- Step: ([0-9,\\.]+) ([^\r\n]*)",
+    #         metadata.decode(),
+    #     )
+    #     if parsed is None:
+    #         return (0, np.nan, "")
+    #     parsed_fields = parsed.groups()
+    #     return (
+    #         int(parsed_fields[0]),
+    #         float(parsed_fields[1].replace(",", ".")),
+    #         parsed_fields[2],
+    #     )
+
+
+    #original
+    # def get_field_resolutionZ(self, field_id: int) -> List[float]:
+    #     with open(self.filename, "rb") as ND2H:
+    #         parser = ND2Parser(ND2H)
+    #         z_fields, z_step, z_unit = self.get_Z_loop_step(parser)
+    #         if 0 != z_fields:
+    #             return [z_step]
+    #         Zdata = np.array(parser._raw_metadata.z_data)
+    #         Zlevels = np.array(parser.metadata["z_levels"]).astype("int")
+    #         Zlevels = Zlevels + len(Zlevels) * field_id
+    #         Zdata = Zdata[Zlevels]
+    #         return np.round(np.diff(Zdata), 3).tolist()
+
+
 
     def select_channels(self, channels: List[str]) -> List[str]:
         return [
@@ -201,7 +265,7 @@ class ND2Reader2(ND2Reader):
         d = dict(
             channel_name=self.metadata["channels"][channel_id].lower(),
             channel_id=f"{(channel_id+1):03d}",
-            series_id=f"{(field_id+1):03d}",
+            series_id=f"{(field_id+1):05d}",
             dimensions=len(self.bundle_axes),
             axes_order="".join(self.bundle_axes),
         )
@@ -341,7 +405,7 @@ class CziFile2(CziFile):
         d = dict(
             channel_name=list(self.get_channel_names())[channel_id],
             channel_id=f"{(channel_id+1):03d}",
-            series_id=f"{(field_id+1):03d}",
+            series_id=f"{(field_id+1):05d}",
             dimensions=3,
             axes_order="ZYX",
         )
